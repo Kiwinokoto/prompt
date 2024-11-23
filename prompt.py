@@ -25,9 +25,9 @@
 # librairies
 import streamlit as st
 from PyPDF2 import PdfReader
-from pdf2image import convert_from_path
-from pytesseract import image_to_string
-from PIL import Image
+# from pdf2image import convert_from_path
+# from pytesseract import image_to_string
+# from PIL import Image
 import os
 import openai
 from typing import List
