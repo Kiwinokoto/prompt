@@ -115,7 +115,7 @@ def summarize_chunk_hf_api(chunk, max_retries=3, retry_delay=10):
     :return: The summary text
     """
     # Create inference API client
-    inference = InferenceApi(repo_id="facebook/bart-large-cnn")
+    inference = InferenceApi(repo_id="facebook/bart-large-cnn", token=hf_api_key)
 
     # Try sending request with retry logic
     for attempt in range(max_retries):
@@ -171,7 +171,7 @@ def summarize_text(text):
     return final_summary
 
 # Initialize the API client
-inference = InferenceApi(repo_id="facebook/bart-large-cnn")
+inference = InferenceApi(repo_id="facebook/bart-large-cnn", token=hf_api_key)
 
 def rewrite_for_audience_hf(text, audience="kids"):
     """Rewrites a text for a specific audience using Hugging Face's BART model.
