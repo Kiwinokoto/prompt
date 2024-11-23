@@ -70,7 +70,7 @@ def load_pdf(filepath):
 # key : see .toml file in .streamlit folder (gitignored for security)
 # Try fetching the API key
 try:
-    hf_api_key = st.secrets["huggingface"]["api_key"]
+    hf_api_key = st.secrets["huggingface"]["summarize_key"]
 except KeyError:
     st.error("Hugging Face API key is missing from Streamlit secrets. Please set it in the Secrets management panel.")
     hf_api_key = None
@@ -86,6 +86,15 @@ if hf_api_key:
             return response.json()[0]['summary_text']
         else:
             return f"Error: {response.status_code}, {response.text}"
+
+try:
+    openai_api_key = st.secrets["openai"]["rephrase_key"]
+except KeyError:
+    st.error("OpenAI API key is missing from Streamlit secrets. Please set it in the Secrets management panel.")
+    openai_api_key = None
+
+# Initialize the OpenAI client
+client = openai.Client(api_key=openai_api_key)
 
 # cut long text in small, coherent chunks
 def chunk_text(text, max_chars=4000):
@@ -105,7 +114,7 @@ def chunk_text(text, max_chars=4000):
 
     return chunks
 
-# summarize 1 chunk
+# summarize 1 chunk using bart
 def summarize_chunk_hf_api(chunk, max_retries=3, retry_delay=10):
     """
     Summarizes a chunk of text using Hugging Face API with retry logic.
@@ -135,6 +144,22 @@ def summarize_chunk_hf_api(chunk, max_retries=3, retry_delay=10):
                 # If all attempts fail, raise the error
                 print("Max retries reached. Could not complete the request.")
                 raise e
+
+# summarize a chunk using OpenAI's GPT-3.5 API
+# not used, possible update needed
+def summarize_chunk_gpt_api(chunk):
+    """Summarizes a single chunk using OpenAI's GPT-3.5 API."""
+    prompt = f"Please summarize the following text:\n\n{chunk}"
+
+    response = openai.Completion.create(
+        model="gpt-3.5-turbo",  # Or "gpt-4" depending on what you want to use
+        prompt=prompt,
+        max_tokens=500,
+        temperature=0.7,
+    )
+
+    summary = response.choices[0].message['content'].strip()
+    return summary
 
 # chunk + summarize all text
 def summarize_text(text):
@@ -171,6 +196,67 @@ def summarize_text(text):
     final_summary = "\n".join(summaries)
     return final_summary
 
+# Function to rewrite a summary for a specific audience using GPT-3.5 API
+# not used, not free
+def rewrite_for_audience(text, audience="kids"):
+    """Rewrites a text for a specific audience using OpenAI's latest API structure."""
+
+    # Construct the prompt for the model
+    prompt = f"Rewrite the following text for a {audience} audience, making it engaging and suitable for their understanding:\n\n{text}"
+
+    response = client.chat.completions.create(
+        messages = [
+            {"role": "user", "content": prompt}
+        ],
+        model="gpt-3.5-turbo",
+    )
+
+    rewritten_text = response.choices[0].message['content'].strip()
+    return rewritten_text
+
+# Initialize the API client
+inference = InferenceApi(repo_id="facebook/bart-large-cnn")
+
+def rewrite_for_audience_hf(text, audience="kids"):
+    """Rewrites a text for a specific audience using Hugging Face's BART model.
+    Chunks the text, rephrases each chunk for a specific audience, and combines the rephrased results."""
+    # Chunk the text into manageable pieces
+    chunks = chunk_text(text)
+
+    # Create placeholders for progress updates and progress bar
+    progress_placeholder = st.empty()
+    progress_bar = st.progress(0)
+
+    # Initialize an empty list to store rewritten chunks
+    rewritten_chunks = []
+
+    # Process each chunk
+    for i, chunk in enumerate(chunks):
+         # Update the progress bar and placeholder
+        progress_bar.progress((i + 1) / len(chunks))
+        progress_placeholder.write(f"Rephrasing chunk {i + 1}/{len(chunks)} for {audience} audience...")
+
+        # Create a prompt based on the target audience
+        prompt = f"Rewrite the following text for a {audience} audience, making it engaging and suitable for their understanding:\n\n{chunk}"
+
+        try:
+            # Call the Hugging Face API to rewrite the chunk
+            response = inference(inputs=prompt)
+
+            # Check and extract the rewritten text
+            if isinstance(response, list) and 'summary_text' in response[0]:
+                rewritten_chunk = response[0]['summary_text']
+                rewritten_chunks.append(rewritten_chunk)
+            else:
+                print(f"Unexpected response format: {response}")
+                rewritten_chunks.append("")  # Append an empty string in case of failure
+        except Exception as e:
+            print(f"Error rephrasing chunk {i + 1}: {e}")
+            rewritten_chunks.append("")  # Handle errors gracefully
+
+    # Combine all rewritten chunks into a single text
+    final_rewritten_text = "\n".join(rewritten_chunks)
+    return final_rewritten_text
 
 
 # Main function
@@ -182,48 +268,68 @@ def main():
     # shorter doc for tests (modify for deployment)
     preloaded_pdf_path = "./truncated_document.pdf"
     # complete doc
-    # preloaded_pdf_path = "./pwc-luxembourg-annual-review-2024.pdf"
+    preloaded_pdf_path = "./pwc-luxembourg-annual-review-2024.pdf"
 
     # Create first form (choix du doc)
     with st.form("document_form"):
-        st.markdown("<h3 style='font-size: 1.3em; font-weight: bold;'>1) Veuillez choisir le document à synthétiser</h3>", unsafe_allow_html=True)
+        st.markdown("<h3 style='font-size: 1.3em; font-weight: bold;'>1) Please choose the document to summarize</h3>", unsafe_allow_html=True)
 
         # Option to use preloaded document
         use_preloaded = st.radio(
             "Options :",
-            ("Utiliser le document présélectionné (annual-review)", "Uploader un fichier PDF")
+            ("Use default document (annual-review)", "Upload a PDF file, preferably in English")
         )
 
         # File uploader for custom PDF (only appears if user chooses to upload)
         uploaded_file = None
-        if use_preloaded == "Uploader un fichier PDF":
-            uploaded_file = st.file_uploader("Uploader un fichier PDF :", type=["pdf"])
+        if use_preloaded == "Upload a PDF file, preferably in English":
+            uploaded_file = st.file_uploader("Upload PDF file:", type=["pdf"])
+
+        # Pour quel public ?
+        st.markdown("<h3 style='font-size: 1.3em; font-weight: bold;'>2) Select the target audience for rewriting</h3>", unsafe_allow_html=True)
+        chosen_audience = st.selectbox("Options", ["kids", "experts", "general public"])
+        # add free choice
 
         # Submit button
-        submitted = st.form_submit_button("Valider")
+        submitted = st.form_submit_button("Submit")
 
         if submitted:
-            if use_preloaded == "Utiliser le document présélectionné (annual-review)":
-                st.success("Vous avez choisi d'utiliser le document présélectionné : *annual-review*.")
+            if use_preloaded == "Use default document (annual-review)":
+                st.success("You chose the preselected document: *annual-review*.")
                 # Process the preloaded PDF
+                # factoriser !
                 pdf_content = load_pdf(preloaded_pdf_path)  # Cached function call
-                final_summary = summarize_text(pdf_content)
-                st.subheader("Final Summary")
-                st.write(final_summary)
+                first_summary = summarize_text(pdf_content)
+                st.subheader("Standard Summary")
+                st.write(first_summary)
+
+                # now rephrase
+                rewritten_summary = rewrite_for_audience_hf(first_summary, chosen_audience)
+                st.subheader(f"Rewritten Summary for {chosen_audience.capitalize()}:")
+                st.write(rewritten_summary)
+
             elif uploaded_file:
-                st.success("Fichier PDF uploadé avec succès.")
-                st.write(f"Nom du fichier : {uploaded_file.name}")
+                st.success("PDF file uploaded.")
+                st.write(f"Name : {uploaded_file.name}")
                 # Process the uploaded PDF
                 # Save uploaded file to disk temporarily to allow caching
                 temp_path = f"temp_{uploaded_file.name}"
                 with open(temp_path, "wb") as f:
                     f.write(uploaded_file.read())
+                    # facto!
                     pdf_content = load_pdf(temp_path)  # Cached function call
-                    final_summary = summarize_text(pdf_content)
-                    st.subheader("Final Summary")
+                    first_summary = summarize_text(pdf_content)
+                    st.subheader("Standard Summary")
                     st.write(first_summary)
+
+                    # now rephrase
+                    # FACTORISER
+                    rewritten_summary = rewrite_for_audience_hf(first_summary, chosen_audience)
+                    st.subheader(f"Rewritten Summary for {chosen_audience.capitalize()}:")
+                    st.write(rewritten_summary)
+
             else:
-                st.error("Veuillez uploader un fichier PDF avant de continuer.")
+                st.error("Please upload a PDF file, or choose default document.")
 
 
 # Run the app
