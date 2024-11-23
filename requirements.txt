@@ -1,0 +1,6 @@
+streamlit
+PyPDF2
+huggingface_hub
+transformers
+openai
+requests
