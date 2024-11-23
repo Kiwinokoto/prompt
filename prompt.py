@@ -29,7 +29,6 @@ from PyPDF2 import PdfReader
 # from pytesseract import image_to_string
 # from PIL import Image
 import os
-import openai
 from typing import List
 import re
 from transformers import pipeline
@@ -87,15 +86,6 @@ if hf_api_key:
         else:
             return f"Error: {response.status_code}, {response.text}"
 
-try:
-    openai_api_key = st.secrets["openai"]["rephrase_key"]
-except KeyError:
-    st.error("OpenAI API key is missing from Streamlit secrets. Please set it in the Secrets management panel.")
-    openai_api_key = None
-
-# Initialize the OpenAI client
-client = openai.Client(api_key=openai_api_key)
-
 # cut long text in small, coherent chunks
 def chunk_text(text, max_chars=4000):
     """Splits text into smaller chunks."""
@@ -145,22 +135,6 @@ def summarize_chunk_hf_api(chunk, max_retries=3, retry_delay=10):
                 print("Max retries reached. Could not complete the request.")
                 raise e
 
-# summarize a chunk using OpenAI's GPT-3.5 API
-# not used, possible update needed
-def summarize_chunk_gpt_api(chunk):
-    """Summarizes a single chunk using OpenAI's GPT-3.5 API."""
-    prompt = f"Please summarize the following text:\n\n{chunk}"
-
-    response = openai.Completion.create(
-        model="gpt-3.5-turbo",  # Or "gpt-4" depending on what you want to use
-        prompt=prompt,
-        max_tokens=500,
-        temperature=0.7,
-    )
-
-    summary = response.choices[0].message['content'].strip()
-    return summary
-
 # chunk + summarize all text
 def summarize_text(text):
     """Chunks the text and summarizes each chunk, then combines the summaries."""
@@ -195,24 +169,6 @@ def summarize_text(text):
     # Combine the summaries
     final_summary = "\n".join(summaries)
     return final_summary
-
-# Function to rewrite a summary for a specific audience using GPT-3.5 API
-# not used, not free
-def rewrite_for_audience(text, audience="kids"):
-    """Rewrites a text for a specific audience using OpenAI's latest API structure."""
-
-    # Construct the prompt for the model
-    prompt = f"Rewrite the following text for a {audience} audience, making it engaging and suitable for their understanding:\n\n{text}"
-
-    response = client.chat.completions.create(
-        messages = [
-            {"role": "user", "content": prompt}
-        ],
-        model="gpt-3.5-turbo",
-    )
-
-    rewritten_text = response.choices[0].message['content'].strip()
-    return rewritten_text
 
 # Initialize the API client
 inference = InferenceApi(repo_id="facebook/bart-large-cnn")
