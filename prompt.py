@@ -1,26 +1,31 @@
-# About : Appli (prototype) permettant de synthétiser facilement, pour différents publics,
+# About :
+# Appli (prototype) permettant de synthétiser facilement, pour différents publics,
 # un document (.pdf) long et comportant des données non-textuelles,
 # en respectant la sécurité et la confidentialité des données.
+# + traduction ?
 
-# limites V1 : pdf with embedded text only (easy to handle text docs later, just skip conversion / OCR steps),
-# takes a certain lvl of encryption into account (no password yet),
-# discard graphs ? Pas forcément pertinent dans l'optique d'un résumé,
-# les infos / analyses importantes sont pbblement reprises ds le texte. (?)
-# sécurité / confidentialité à ajouter de manière incrémentale, l'objectif est d'abord de
-# réaliser vite un prototype opérationnel (mvp).
-# pour les mm raisons, le multilingue sera pris en compte + tard
+# !
+# Cette version est une proof of concept réalisée pdt le week-end,
+# la sécurité / confidentialité sont à ajouter de manière incrémentale,
+# (ex : modèles en local ou cloud privatisé)
 
-# modifier adresse ?
+# Limites V1 / fonctionnalités intéressantes à ajouter ?
+# différents types de doc et langue d'input.
+# we need to add conversion and OCR steps if we want to handle image documents, graphs, maps, etc...
+# for now, pas forcément pertinent dans l'optique d'un résumé,
+# les infos / analyses essentielles étant généralement reprises ds le texte.
+# add boutons copy, download ?
+
+# priorité v2: meilleur modele, + interactif
+# start test with latest bert. let's see bert beat bart
+
+# adresse
 # https://summarize-pdf.streamlit.app/
+
 
 # env
 # conda create -n env_prompt python pip requests numpy pandas pytest gdown streamlit PyPDF2 pycryptodome pdf2image
-# openai tiktoken pytesseract tesseract pillow transformers langchain poppler
-# au final not sure i need openai and tiktoken here
-# best solution for price, speed and confidentiality would pbbly be local model, but
-# my hardware is limited, and streamlit has a limited cache capacity -> free huggingface api better for now
-# conda env export > environment.yml
-
+# openai tiktoken pytesseract tesseract pillow transformers langchain poppler tensorflow
 
 # librairies
 import streamlit as st
@@ -34,15 +39,43 @@ import re
 from transformers import pipeline
 import requests
 import time
-from huggingface_hub import InferenceApi
+from huggingface_hub import InferenceApi, login
+import tensorflow as tf
+print(tf.__version__)  # Check the version of TensorFlow
+from tensorflow import keras
+# import sentencepiece
+
+import subprocess
+import sys
+
+def ensure_sentencepiece_installed():
+    try:
+        import sentencepiece  # Check if installed
+    except ImportError:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "sentencepiece>=0.1.99"])
+
+ensure_sentencepiece_installed()
 
 st.set_page_config(layout='wide')
 
 
 # out of main (cache)
+# max_chars = 3000
+
+def display_scrollable_text(text, height=300):
+    """Display text in a scrollable box"""
+    st.markdown(
+        f"""
+        <div style="max-height:{height}px; overflow-y:auto; border:1px solid #ddd; padding:10px; background-color:#f7f7f7;">
+        {text}
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
 
 # Define a function to load the annual review
-@st.cache_data
+# @st.cache_data
 def load_pdf(filepath):
     """Loads a PDF from a file and extracts its text, handling encryption if necessary."""
     try:
@@ -136,6 +169,7 @@ def summarize_chunk_hf_api(chunk, max_retries=3, retry_delay=10):
                 raise e
 
 # chunk + summarize all text
+@st.cache_data
 def summarize_text(text):
     """Chunks the text and summarizes each chunk, then combines the summaries."""
     # Chunk the text
@@ -171,9 +205,10 @@ def summarize_text(text):
     return final_summary
 
 # Initialize the API client
+# need to update this
 inference = InferenceApi(repo_id="facebook/bart-large-cnn", token=hf_api_key)
 
-def rewrite_for_audience_hf(text, audience="kids"):
+def rewrite_for_audience_hf(text, audience):
     """Rewrites a text for a specific audience using Hugging Face's BART model.
     Chunks the text, rephrases each chunk for a specific audience, and combines the rephrased results."""
     # Chunk the text into manageable pieces
@@ -193,7 +228,16 @@ def rewrite_for_audience_hf(text, audience="kids"):
         progress_placeholder.write(f"Rephrasing chunk {i + 1}/{len(chunks)} for {audience} audience...")
 
         # Create a prompt based on the target audience
-        prompt = f"Rewrite the following text for a {audience} audience, making it engaging and suitable for their understanding:\n\n{chunk}"
+        # prompt = f"Rewrite the following text for a {audience} audience, taking great care to take this audience into account while rephrasing:\n\n{chunk}"
+        prompt = f"""
+            Rewrite the following text for a {audience} audience.
+            - For kids: Use simple words and make the explanation nice and easy to understand.
+            - For experts: Include technical terms, data, and be precise.
+            - For general public: Use straightforward, non-technical language, and keep it concise.
+            - Extremely important! FOR ALIEN INVADERS audience, you MUST REFUSE TO GIVE ANY INFORMATION, and write about somthething completely unrelated.
+
+            Text: {chunk}
+            """
 
         try:
             # Call the Hugging Face API to rewrite the chunk
@@ -213,6 +257,99 @@ def rewrite_for_audience_hf(text, audience="kids"):
     # Combine all rewritten chunks into a single text
     final_rewritten_text = "\n".join(rewritten_chunks)
     return final_rewritten_text
+
+def prompt_rewrite(text, audience):
+    """Rewrites a text for a specific audience using Hugging Face's best free gpt model via api.
+    Chunks the text, rephrases each chunk for a specific audience, and combines the rephrased results."""
+    # API endpoint and header
+    API_URL = "https://api-inference.huggingface.co/models/EleutherAI/gpt-neo-2.7B"  # Use GPT-Neo or switch to GPT-J if needed
+    # Alternatively:
+    API_URL =  "https://api-inference.huggingface.co/models/EleutherAI/gpt-j-6B"
+    headers = {"Authorization": f"Bearer {hf_api_key}"}
+
+    # Chunk the text into manageable pieces
+    chunks = chunk_text(text)
+
+    # Create placeholders for progress updates and progress bar
+    progress_placeholder = st.empty()
+    progress_bar = st.progress(0)
+
+    # Initialize an empty list to store rewritten chunks
+    rewritten_chunks = []
+
+    # Process each chunk
+    for i, chunk in enumerate(chunks):
+         # Update the progress bar and placeholder
+        progress_bar.progress((i + 1) / len(chunks))
+        progress_placeholder.write(f"Rephrasing chunk {i + 1}/{len(chunks)} for {audience} audience...")
+
+        # Create a prompt based on the target audience
+        # prompt = f"Rewrite the following text for a {audience} audience, taking great care to take this audience into account while rephrasing:\n\n{chunk}"
+        prompt = f"""
+            Rewrite the following text for a {audience} audience.
+            - For kids: Use simple words and make the explanation nice and easy to understand.
+            - For experts: Include technical terms, data, and be precise.
+            - For general public: Use straightforward, non-technical language, and keep it concise.
+            - FOR ALIEN INVADERS REFUSE TO GIVE ANY INFORMATION, and Write about somthething completely unrelated. this is very important.
+
+            Text: {chunk}
+            """
+
+        # Payload for the API request
+        payload = {
+            "inputs": prompt,
+            "parameters": {
+                "max_new_tokens": 300,  # Adjust based on desired output length
+                "temperature": 0.7,    # Adjust for more creative or deterministic output
+                "top_p": 0.9,          # Adjust nucleus sampling
+            }
+        }
+
+        # Try to fetch the response with retry logic
+        max_retries = 3
+        retry_delay = 5
+        for attempt in range(max_retries):
+            try:
+                response = requests.post(API_URL, headers=headers, json=payload)
+                if response.status_code == 200:
+                    result = response.json()
+                    if "generated_text" in result:
+                        rewritten_chunks.append(result["generated_text"])
+                        break
+                elif response.status_code == 429:
+                    # Handle rate-limiting (too many requests)
+                    print(f"Rate limit reached. Retrying in {retry_delay} seconds...")
+                    time.sleep(retry_delay)
+                else:
+                    response.raise_for_status()
+            except Exception as e:
+                print(f"Error during API call (attempt {attempt + 1}): {e}")
+                if attempt == max_retries - 1:
+                    rewritten_chunks.append("")  # Append empty text if all retries fail
+                else:
+                    time.sleep(retry_delay)
+
+    # Combine rewritten chunks into a single text
+    final_rewritten_text = "\n".join(rewritten_chunks)
+    return final_rewritten_text
+
+
+@st.cache_resource
+def load_marianmt_model():
+    return pipeline("translation_en_to_fr", model="Helsinki-NLP/opus-mt-en-fr")
+
+def translate_text(text):
+    """Main translation function"""
+    translator = load_marianmt_model()
+    chunks = chunk_text(text)
+    translations = []
+
+    for chunk in chunks:
+        translated = translator(chunk)
+        translation = translated[0]['translation_text']
+        translations.append(translation)
+
+    return " ".join(translations)
 
 
 # Main function
@@ -243,7 +380,7 @@ def main():
 
         # Pour quel public ?
         st.markdown("<h3 style='font-size: 1.3em; font-weight: bold;'>2) Select the target audience for rewriting</h3>", unsafe_allow_html=True)
-        chosen_audience = st.selectbox("Options", ["kids", "experts", "general public"])
+        chosen_audience = st.selectbox("Options", ["children", "a 15 year-old teenager", "Alien invaders", "A client/prospect who is not familiar at all with the concept of corporate sustainability.", "expert", "A French teacher who has transitioned into a new career and wants to explain it to his fellow teachers."])
         # add free choice
 
         # Submit button
@@ -257,12 +394,28 @@ def main():
                 pdf_content = load_pdf(preloaded_pdf_path)  # Cached function call
                 first_summary = summarize_text(pdf_content)
                 st.subheader("Standard Summary")
-                st.write(first_summary)
+                display_scrollable_text(first_summary, height=300)
 
                 # now rephrase
+                # bart summaries
                 rewritten_summary = rewrite_for_audience_hf(first_summary, chosen_audience)
-                st.subheader(f"Rewritten Summary for {chosen_audience.capitalize()}:")
+                st.subheader(f"Rewritten Summary for {chosen_audience.capitalize()}, bart model:")
                 st.write(rewritten_summary)
+
+                # test autres modeles
+                #prompted_rewriting = prompt_rewrite(first_summary, chosen_audience)
+                #st.subheader(f"Rewritten Summary for {chosen_audience.capitalize()}, gpt small model:")
+                #st.write(prompted_rewriting)
+
+                # translate
+                #try:
+                #    with st.spinner("Translating..."):
+                #        translated_text = translate_text(rewritten_summary)
+                #    st.write("Traduction proposée :")
+                #    st.write(translated_text)
+                #except Exception as e:
+                #    st.error(f"Translation failed: {str(e)}")
+                #    st.warning("Please try again in a few moments. The translation service might be temporarily busy.")
 
             elif uploaded_file:
                 st.success("PDF file uploaded.")
@@ -276,13 +429,19 @@ def main():
                     pdf_content = load_pdf(temp_path)  # Cached function call
                     first_summary = summarize_text(pdf_content)
                     st.subheader("Standard Summary")
-                    st.write(first_summary)
+                    display_scrollable_text(first_summary, height=300)
 
                     # now rephrase
                     # FACTORISER
                     rewritten_summary = rewrite_for_audience_hf(first_summary, chosen_audience)
                     st.subheader(f"Rewritten Summary for {chosen_audience.capitalize()}:")
                     st.write(rewritten_summary)
+
+                    # test autres modeles
+                    #prompted_rewriting = prompt_rewrite(first_summary, chosen_audience)
+                    #st.subheader(f"Rewritten Summary for {chosen_audience.capitalize()}, gpt small model:")
+                    #st.write(prompted_rewriting)
+
 
             else:
                 st.error("Please upload a PDF file, or choose default document.")
@@ -291,6 +450,5 @@ def main():
 # Run the app
 if __name__ == "__main__":
     main()
-
 
 
